@@ -1,7 +1,7 @@
 use support::{decl_storage, decl_module, StorageValue, StorageMap,
-    dispatch::Result, ensure, decl_event};
+    dispatch::Result, ensure, decl_event, traits::Currency};
 use system::ensure_signed;
-use runtime_primitives::traits::{As, Hash};
+use runtime_primitives::traits::{As, Hash, Zero};
 use parity_codec::{Encode, Decode};
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
@@ -27,6 +27,7 @@ decl_event!(
         Created(AccountId, Hash),
         PriceSet(AccountId, Hash, Balance),
         Transferred(AccountId, AccountId, Hash),
+        Bought(AccountId, AccountId, Hash, Balance),
     }
 );
 
@@ -98,6 +99,45 @@ decl_module! {
 
             Self::transfer_from(sender, to, kitty_id)?;
 
+            Ok(())
+        }
+
+         fn buy_kitty(origin, kitty_id: T::Hash, max_price: T::Balance) -> Result {
+            let sender = ensure_signed(origin)?;
+
+            ensure!(<Kitties<T>>::exists(kitty_id), "This cat does not exist");
+
+            let owner = Self::owner_of(kitty_id).ok_or("No owner for this kitty")?;
+            ensure!(owner == sender, "You do not own this kitty");
+
+            let mut kitty = Self::kitty(kitty_id);
+
+            // Get the `kitty_price` and check that it is not zero
+            //      HINT:  `runtime_primitives::traits::Zero` allows you to call `kitty_price.is_zero()` which returns a bool
+            let kitty_price = kitty.price;
+            ensure!(!kitty_price.is_zero(), "kitty price is zero");
+
+            // Check `kitty_price` is less than or equal to max_price
+            ensure!(kitty_price <= max_price, "kitty is too expensive");
+
+            // Use the `Balances` module's `Currency` trait and `transfer()` function to safely transfer funds
+            <balances::Module<T> as Currency<_>>::transfer(&sender, &owner, kitty.price)?;
+
+            // Transfer the kitty using `tranfer_from()` including a proof of why it cannot fail
+            Self::transfer_from(owner.clone(), sender.clone(), kitty_id)
+                .expect("`owner` is shown to own the kitty; \
+                `owner` must have greater than 0 kitties, so transfer cannot cause underflow; \
+                `all_kitty_count` shares the same type as `owned_kitty_count` \
+                and minting ensure there won't ever be more than `max()` kitties, \
+                which means transfer cannot cause an overflow; \
+                qed");
+
+            // Reset kitty price back to zero, and update the storage
+            kitty.price = <T::Balance as As<u64>>::sa(0);
+            <Kitties<T>>::insert(kitty_id, kitty);
+
+            // Create an event for the cat being bought with relevant details
+            Self::deposit_event(RawEvent::Bought(sender, owner, kitty_id, kitty_price));
             Ok(())
         }
     }
